@@ -11,6 +11,8 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+COPY requirements.txt ./
+
 # Install Python dependencies
 # Using --no-cache-dir to reduce image size
 RUN pip install requirements.txt
