@@ -13,7 +13,7 @@ RUN apt-get update && \
 
 # Install Python dependencies
 # Using --no-cache-dir to reduce image size
-RUN pip install requirements.txt
+RUN pip install --no-cache-dir pyVoIP m3u8 requests
 
 # Copy the Python script into the container
 # Assuming your script is named app.py in the same directory as the Dockerfile
