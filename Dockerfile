@@ -17,7 +17,7 @@ RUN pip install requirements.txt
 
 # Copy the Python script into the container
 # Assuming your script is named app.py in the same directory as the Dockerfile
-COPY pyvoip_m3u8_player_single_docker.py ./app.py
+COPY app/pyvoip_m3u8_player_single_docker.py ./service.py
 
 # Expose SIP port (UDP) and a common range for RTP (UDP)
 # These are for documentation; actual mapping happens in `docker run`
