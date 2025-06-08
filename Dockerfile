@@ -41,4 +41,4 @@ ENV TARGET_AUDIO_CHANNELS="1"
 ENV RTP_PACKET_DURATION_MS="20"
 
 # Command to run the application
-CMD ["python", "./app.py"]
+CMD ["python", "./service.py"]
