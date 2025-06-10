@@ -341,7 +341,6 @@ if __name__ == "__main__":
         phone_args["myIP"] = YOUR_LOCAL_IP
 
     phone = VoIPPhone(**phone_args)
-    phone.incomingCallCallback = incoming_call_invite_handler
     try:
         print("Starting PyVoIP phone instance...")
         phone.start()
