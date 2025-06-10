@@ -335,7 +335,7 @@ if __name__ == "__main__":
         "username": SIP_USERNAME,
         "password": SIP_PASSWORD,
         "callCallback": call_answered_handler, # For when call is active for media
-        "incomingCallCallback": incoming_call_invite_handler # For initial INVITE
+        "incomingCallInviteCallback": incoming_call_invite_handler # For initial INVITE
     }
     if YOUR_LOCAL_IP: # Only pass myIP if it's explicitly set
         phone_args["myIP"] = YOUR_LOCAL_IP
