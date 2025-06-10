@@ -335,13 +335,13 @@ if __name__ == "__main__":
         "username": SIP_USERNAME,
         "password": SIP_PASSWORD,
         "callCallback": call_answered_handler, # For when call is active for media
-        "incomingCallCallback": incoming_call_invite_handler # For initial INVITE
+        #"incomingCallCallback": incoming_call_invite_handler # For initial INVITE
     }
     if YOUR_LOCAL_IP: # Only pass myIP if it's explicitly set
         phone_args["myIP"] = YOUR_LOCAL_IP
 
     phone = VoIPPhone(**phone_args)
-        
+    phone.incomingCallCallback = incoming_call_invite_handler
     try:
         print("Starting PyVoIP phone instance...")
         phone.start()
