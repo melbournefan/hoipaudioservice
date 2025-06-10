@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the Python script into the container and rename it
 # Assumes your script is in the same directory as the Dockerfile
-COPY app/service.py
+COPY app/service.py ./
 
 # Expose SIP port (UDP) and a common range for RTP (UDP)
 EXPOSE 5060/udp
