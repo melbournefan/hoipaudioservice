@@ -45,18 +45,16 @@ jobs:
           # This action automatically generates tags based on git refs (e.g., latest, release version)
           # You can customize tagging rules here if needed, but the default often works well.
 
+      - name: Debug - Print generated tags
+        run: echo "Generated Docker tags: ${{ steps.meta.outputs.tags }}"
+
       - name: Build and push Docker image
         id: push
-        # FIX 1: You were missing the version for the build-push-action.
-        # Pinning to a specific SHA is best practice for stability.
         uses: docker/build-push-action@2cdde97d0284ac619989808d4b470bdc7302f3a6 # Pin to a specific SHA for stability
         with:
           context: .
           file: ./Dockerfile
           push: true
-          # FIX 2: Your 'tags' line had a placeholder 'your-image-name'.
-          # You need to use the full image name derived from the metadata step.
-          # The 'meta.outputs.tags' will provide `vk3vtv/m3u8tovoip:latest`, `vk3vtv/m3u8tovoip:1.0.0`, etc.
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
