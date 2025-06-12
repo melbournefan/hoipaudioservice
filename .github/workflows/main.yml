@@ -46,11 +46,11 @@ jobs:
           # You can customize tagging rules here if needed, but the default often works well.
 
       - name: Debug - Print generated tags
-        run: echo "Generated Docker tags: "${{ steps.meta.outputs.tags }}"
+        run: echo "Generated Docker tags: ${{ steps.meta.outputs.tags }}"
 
       - name: Build and push Docker image
         id: push
-        uses: docker/build-push-action@2cdde97d0284ac619989808d4b470bdc7302f3a6 # Pin to a specific SHA for stability
+        uses: docker/build-push-action@2cdde97d0284ac619989808d4b470bdc7302f3a6 # This is line 49
         with:
           context: .
           file: ./Dockerfile
