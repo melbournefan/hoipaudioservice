@@ -18,34 +18,46 @@ jobs:
     name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
     permissions:
-      packages: write
-      contents: read
-      attestations: write
-      id-token: write
+      contents: read # Allow reading the repository content
+      packages: write # Allow writing to GitHub Packages (good practice, even if only pushing to Docker Hub)
+      attestations: write # Required for `attest-build-provenance`
+      id-token: write # Required for `attest-build-provenance` to get OIDC token for attestation
+
     steps:
       - name: Check out the repo
         uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+        # It's generally recommended to use a Personal Access Token (PAT) with specific permissions
+        # instead of your main Docker Hub password for automated systems.
+        # Ensure DOCKER_HUB_USERNAME and DOCKER_HUB_PASSWORD secrets are correctly configured
+        # in your GitHub repository settings.
+        uses: docker/login-action@0d4c9c5cd5a4ae683e955d8003ce037d4cdfdc76 # Pin to a specific SHA for stability
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_PASSWORD }}
+          password: ${{ secrets.DOCKER_HUB_PASSWORD }} # Consider using a DOCKER_HUB_TOKEN (PAT) instead
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@8e5442c4ef9f78752691e2d858e8aac86b65c60e # Pin to a specific SHA for stability
         with:
-          images: vk3vtv/m3u8tovoip
+          images: vk3vtv/m3u8tovoip # This correctly defines the base image name
+          # This action automatically generates tags based on git refs (e.g., latest, release version)
+          # You can customize tagging rules here if needed, but the default often works well.
 
       - name: Build and push Docker image
         id: push
-        uses: docker/build-push-action@
+        # FIX 1: You were missing the version for the build-push-action.
+        # Pinning to a specific SHA is best practice for stability.
+        uses: docker/build-push-action@2cdde97d0284ac619989808d4b470bdc7302f3a6 # Pin to a specific SHA for stability
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/your-image-name:latest
+          # FIX 2: Your 'tags' line had a placeholder 'your-image-name'.
+          # You need to use the full image name derived from the metadata step.
+          # The 'meta.outputs.tags' will provide `vk3vtv/m3u8tovoip:latest`, `vk3vtv/m3u8tovoip:1.0.0`, etc.
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Generate artifact attestation
