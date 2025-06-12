@@ -39,7 +39,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@8e5442c4ef9f78752691e2d858e8aac86b65c60e # Pin to a specific SHA for stability
+        uses: docker/metadata-action@v5 # Pin to a specific SHA for stability
         with:
           images: vk3vtv/m3u8tovoip # This correctly defines the base image name
           # This action automatically generates tags based on git refs (e.g., latest, release version)
@@ -50,7 +50,7 @@ jobs:
 
       - name: Build and push Docker image
         id: push
-        uses: docker/build-push-action@2cdde97d0284ac619989808d4b470bdc7302f3a6 # This is line 49
+        uses: docker/build-push-action@v5 # This is line 49
         with:
           context: .
           file: ./Dockerfile
