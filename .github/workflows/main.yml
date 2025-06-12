@@ -46,7 +46,7 @@ jobs:
           # You can customize tagging rules here if needed, but the default often works well.
 
       - name: Debug - Print generated tags
-        run: echo "Generated Docker tags: ${{ steps.meta.outputs.tags }}"
+        run: echo "Generated Docker tags"
 
       - name: Build and push Docker image
         id: push
