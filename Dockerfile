@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/service.py ./
 
 # Expose SIP port (UDP) and a common range for RTP (UDP)
-EXPOSE 5060/udp
+EXPOSE 5160/udp
 EXPOSE 10000-20000/udp
 
 # Define environment variables that can be overridden at runtime
