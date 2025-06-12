@@ -32,7 +32,7 @@ jobs:
         # instead of your main Docker Hub password for automated systems.
         # Ensure DOCKER_HUB_USERNAME and DOCKER_HUB_PASSWORD secrets are correctly configured
         # in your GitHub repository settings.
-        uses: docker/login-action@0d4c9c5cd5a4ae683e955d8003ce037d4cdfdc76 # Pin to a specific SHA for stability
+        uses: docker/login-action@v3 # Pin to a specific SHA for stability
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_PASSWORD }} # Consider using a DOCKER_HUB_TOKEN (PAT) instead
