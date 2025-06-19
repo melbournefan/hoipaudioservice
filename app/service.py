@@ -6,14 +6,22 @@ import os
 from pyVoIP.VoIP import VoIPPhone, InvalidStateError, CallState
 from urllib.parse import urljoin
 from collections import deque # Import deque
+import config as config
 
-# --- Configuration from Environment Variables ---
+#DOCKER ENV, COPIED OUT FOR NOW
 # SIP Configuration
-SIP_SERVER_IP = os.getenv("SIP_SERVER_IP", "your_default_sip_server_ip")
-SIP_SERVER_PORT = int(os.getenv("SIP_SERVER_PORT", "5060"))
-SIP_USERNAME = os.getenv("SIP_USERNAME", "your_default_username")
-SIP_PASSWORD = os.getenv("SIP_PASSWORD", "your_default_password")
-YOUR_LOCAL_IP = os.getenv("YOUR_LOCAL_IP", None) # Let PyVoIP auto-detect if not set
+#SIP_SERVER_IP = os.getenv("SIP_SERVER_IP", "your_default_sip_server_ip")
+#SIP_SERVER_PORT = int(os.getenv("SIP_SERVER_PORT", "5060"))
+#SIP_USERNAME = os.getenv("SIP_USERNAME", "your_default_username")
+#SIP_PASSWORD = os.getenv("SIP_PASSWORD", "your_default_password")
+#YOUR_LOCAL_IP = os.getenv("YOUR_LOCAL_IP", None) # Let PyVoIP auto-detect if not set
+
+#LOCAL CONFIG settings
+SIP_SERVER_IP = config.hoip_url
+SIP_SERVER_PORT = config.hoip_port
+SIP_USERNAME = config.hoip_username
+SIP_PASSWORD = config.hoip_password
+YOUR_LOCAL_IP = config.my_ip
 
 # M3U8 Stream URL Configuration
 DEFAULT_M3U8_URL = os.getenv("DEFAULT_M3U8_URL", "https://mediaserviceslive.akamaized.net/hls/live/2038267/raeng/index.m3u8")
