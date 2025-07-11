@@ -1,391 +1,329 @@
-import socket
-import logging
-import threading
-import time
+import m3u8
+import aiohttp # For asynchronous HTTP requests
+import asyncio
+import subprocess
 import os
-import subprocess # For ffmpeg
-import requests   # For M3U8 downloads
-import m3u8       # For M3U8 parsing
-from collections import deque
-from urllib.parse import urljoin
-
-# OLD pysip library import (assuming it's installed and accessible)
-# Note: The actual classes and methods might vary slightly based on the exact pysip version
-# This is based on typical older SIP client library structures.
-try:
-    from pysip import sip, sdpsip
-    from pysip.message import Response
-    from pysip.uri import URI as SipURI
-except ImportError:
-    print("Error: 'pysip' library not found. Please install it with 'pip install pysip'")
-    print("WARNING: This is an older library and may not be suitable for your needs.")
-    exit(1)
-
-# Your existing config (ensure it's available)
 import config
+import time
+from asyncio import Queue, Event as AsyncioEvent # Use asyncio's Queue and Event
+from pyVoIP.VoIP import VoIPPhone, InvalidStateError, CallState
 
-# Configure logging (important for debugging)
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# --- Configuration (from your original script) ---
+# --- Configuration ---
 SIP_SERVER_IP = config.hoip_url
 SIP_SERVER_PORT = config.hoip_port
 SIP_USERNAME = config.hoip_username
-SIP_PASSWORD = config.hoip_password
+SIP_PASSWORD = config.hoip_password``
 YOUR_LOCAL_IP = config.my_ip
+M3U8_LIVE_URL = config.radio_australia_url
+SEGMENT_CACHE_DIR = config.SEGMENT_CACHE_DIR
 
-DEFAULT_M3U8_URL = os.getenv("DEFAULT_M3U8_URL", "https://mediaserviceslive.akamaized.net/hls/live/2038267/raeng/index.m3u8")
+# RTP Audio Format (G.711 PCMU) - this is what SIP typically uses by default
+RTP_SAMPLE_RATE = 8000  # Hz
+RTP_CHANNELS = 1        # Mono
+RTP_BITS_PER_SAMPLE = 8 # G.711 is 8-bit samples (u-law or a-law)
+# Target packetization time (e.g., 20ms)
+RTP_PACKET_DURATION_MS = 20
+RTP_BYTES_PER_PACKET = int(RTP_SAMPLE_RATE * (RTP_BITS_PER_SAMPLE / 8) * (RTP_PACKET_DURATION_MS / 1000))
 
-TARGET_AUDIO_FORMAT = os.getenv("TARGET_AUDIO_FORMAT", "pcm_mulaw")
-TARGET_SAMPLE_RATE = os.getenv("TARGET_SAMPLE_RATE", "8000")
-TARGET_AUDIO_CHANNELS = os.getenv("TARGET_AUDIO_CHANNELS", "1")
-RTP_PACKET_DURATION_MS = int(os.getenv("RTP_PACKET_DURATION_MS", "20"))
-BYTES_PER_PACKET = int(int(TARGET_SAMPLE_RATE) * (RTP_PACKET_DURATION_MS / 1000.0))
+# --- Global Queues and Events ---
+# Using asyncio.Queue for inter-task communication
+segment_queue = Queue() 
+# Using asyncio.Event for signaling tasks to stop
+stop_download_event = AsyncioEvent()
+stop_stream_event = AsyncioEvent()
 
-# --- Global state / Call Management for pysip ---
-# Unlike PySIPio's built-in session management, you might manage this more manually
-active_rtp_streams = {} # Dictionary to hold RTP streaming threads/processes per call
-sip_client_instance = None # To store the global SIP client instance
+# --- M3U8 Downloader (now an async task) ---
+class M3U8Downloader:
+    def __init__(self, m3u8_url, output_dir, segment_queue, stop_event, session):
+        self.m3u3_url = m3u8_url
+        self.output_dir = output_dir
+        self.segment_queue = segment_queue
+        self.stop_event = stop_event
+        self.last_segment_uri = None
+        self.session = session # aiohttp client session
 
-# --- Helper Functions (from your original script, slightly adapted) ---
-def get_stream_segments(playlist_url, session):
-    # ... (same as your original, but ensure session is properly used if requests.Session) ...
-    pass
+        os.makedirs(self.output_dir, exist_ok=True)
 
-def download_and_convert(segment_uri, base_url, segment_identifier_for_log, session):
-    # ... (same as your original, but ensure session is properly used) ...
-    pass
+    async def _get_latest_playlist(self):
+        try:
+            # Use aiohttp for async HTTP request
+            async with self.session.get(self.m3u3_url, timeout=5) as response:
+                response.raise_for_status() # Raise exception for HTTP errors
+                playlist_content = await response.text()
+                playlist = m3u8.loads(playlist_content)
+                return playlist
+        except aiohttp.ClientError as e:
+            print(f"[{time.strftime('%H:%M:%S')}] Downloader: Error fetching M3U8 playlist: {e}")
+            return None
 
-# --- NEW: Synchronous RTP Sending Function (Basic) ---
-# This would run in a separate thread because pysip is synchronous
-def stream_audio_to_rtp_sync(call_id, raw_audio_file_path, rtp_remote_ip, rtp_remote_port):
-    if not raw_audio_file_path or not os.path.exists(raw_audio_file_path):
-        logger.warning(f"Call {call_id}: Raw audio file not found: {raw_audio_file_path}")
-        return
-
-    rtp_socket = None
-    try:
-        rtp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Bind to an ephemeral port for RTP
-        rtp_socket.bind((YOUR_LOCAL_IP, 0)) # 0 means OS assigns a free port
-        local_rtp_port = rtp_socket.getsockname()[1]
-        logger.info(f"Call {call_id}: Local RTP port: {local_rtp_port}")
-
-        logger.info(f"Call {call_id}: Streaming audio from {raw_audio_file_path} to {rtp_remote_ip}:{rtp_remote_port}")
-
-        with open(raw_audio_file_path, 'rb') as f:
-            while call_id in active_rtp_streams: # Check if the call is still active
-                audio_chunk = f.read(BYTES_PER_PACKET)
-                if not audio_chunk:
-                    break
+    async def run(self):
+        print(f"[{time.strftime('%H:%M:%S')}] Downloader: M3U8 Downloader task started for {self.m3u3_url}")
+        while not self.stop_event.is_set():
+            playlist = await self._get_latest_playlist()
+            if playlist and playlist.segments:
+                latest_segment = playlist.segments[-1] 
                 
-                # In a real RTP implementation, you'd add RTP headers (seq, timestamp, SSRC, payload type)
-                # For basic PCMU/PCMA, just sending raw data might work for simple tests.
-                rtp_socket.sendto(audio_chunk, (rtp_remote_ip, rtp_remote_port))
+                # Construct full segment URL (handle relative paths)
+                segment_url = latest_segment.uri
+                if not segment_url.startswith(('http://', 'https://')):
+                    base_uri = playlist.base_uri
+                    if not base_uri and '/' in self.m3u3_url:
+                        base_uri = self.m3u3_url.rsplit('/', 1)[0] + '/'
+                    segment_url = base_uri + segment_url
                 
-                time.sleep(RTP_PACKET_DURATION_MS / 1000.0)
+                if segment_url != self.last_segment_uri:
+                    print(f"[{time.strftime('%H:%M:%S')}] Downloader: New segment detected: {segment_url}")
+                    try:
+                        async with self.session.get(segment_url, timeout=10) as segment_response:
+                            segment_response.raise_for_status()
+                            segment_content = await segment_response.read() # Read binary content
+                        
+                        filename = os.path.join(self.output_dir, 
+                                                f"{os.path.basename(latest_segment.uri).split('?')[0]}_{int(time.time() * 1000)}.ts")
+                        
+                        # Write file content in a thread pool to avoid blocking the event loop
+                        await asyncio.to_thread(self._write_segment_file, filename, segment_content)
+                        
+                        print(f"[{time.strftime('%H:%M:%S')}] Downloader: Downloaded {filename}")
+                        await self.segment_queue.put(filename) # Put to asyncio.Queue
+                        self.last_segment_uri = segment_url # Update last processed URI
+                    except aiohttp.ClientError as e:
+                        print(f"[{time.strftime('%H:%M:%S')}] Downloader: Error downloading segment {segment_url}: {e}")
+                # else:
+                    # print(f"[{time.strftime('%H:%M:%S')}] Downloader: No new segment detected.")
+            
+            # Sleep for a period, typically related to target_duration for live streams
+            sleep_duration = (playlist.target_duration / 2) if (playlist and playlist.target_duration) else 5
+            await asyncio.sleep(sleep_duration) # Use asyncio.sleep
+        print(f"[{time.strftime('%H:%M:%S')}] Downloader: M3U8 Downloader task stopped.")
 
-    except FileNotFoundError:
-        logger.error(f"Call {call_id}: Error: Raw audio file {raw_audio_file_path} disappeared during streaming")
-    except Exception as e:
-        logger.error(f"Call {call_id}: Error streaming RTP from file {raw_audio_file_path}: {e}")
-    finally:
-        if rtp_socket:
-            rtp_socket.close()
-        if os.path.exists(raw_audio_file_path):
-            try:
-                os.remove(raw_audio_file_path)
-            except OSError as e_os_err:
-                logger.error(f"Call {call_id}: Error removing temp raw file {raw_audio_file_path}: {e_os_err}")
-        if call_id in active_rtp_streams: # Clean up if stream finished naturally
-            del active_rtp_streams[call_id]
+    def _write_segment_file(self, filename, content):
+        """Blocking file write, to be run in asyncio.to_thread."""
+        with open(filename, 'wb') as f:
+            f.write(content)
 
-# --- M3U8 Streaming Logic (Adapted for Synchronous and separate thread) ---
-def m3u8_streaming_logic_sync(call_id, rtp_remote_ip, rtp_remote_port, m3u8_url):
-    logger.info(f"Call {call_id}: Initiating M3U8 stream from {m3u3_url}")
-    processed_segment_uris = deque(maxlen=100)
-    current_segment_idx = 0
+# --- Audio Streamer to RTP (asyncio task) ---
+async def stream_audio_to_call_task(call, segment_queue, stop_event):
+    print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Started streaming audio to call.")
+    current_ffmpeg_process = None
+    current_segment_path = None
     
-    playlist_reload_interval = 5
-    last_playlist_reload_time = 0
-    initial_segment_fetch_done = False
-
-    request_session = requests.Session()
-    request_session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (pysip M3U8 Player v1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    })
-
     try:
-        while call_id in active_rtp_streams: # Check if the call is still active
-            segments = []
-            is_live_stream = True
+        while not stop_event.is_set() or not segment_queue.empty() or current_ffmpeg_process:
+            if not current_ffmpeg_process:
+                try:
+                    # Get segment path from asyncio.Queue (with timeout)
+                    segment_path = await asyncio.wait_for(segment_queue.get(), timeout=1) 
+                    current_segment_path = segment_path
+                    print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Starting FFmpeg for segment: {segment_path}")
 
-            if time.time() - last_playlist_reload_time > playlist_reload_interval or not initial_segment_fetch_done:
-                fetched_segments, is_vod = get_stream_segments(m3u8_url, request_session)
-                if fetched_segments:
-                    segments = fetched_segments
-                    is_live_stream = not is_vod
-                else:
-                    time.sleep(playlist_reload_interval)
+                    command = [
+                        'ffmpeg',
+                        '-i', segment_path,
+                        '-f', 'mulaw',      # Mu-law (G.711 U-law)
+                        '-ar', str(RTP_SAMPLE_RATE),
+                        '-ac', str(RTP_CHANNELS),
+                        '-map_metadata', '-1',
+                        '-vn',
+                        '-'                 # Output to stdout
+                    ]
+                    # Running subprocess.Popen is fine in asyncio, but its communicate/read methods are blocking
+                    current_ffmpeg_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    
+                    # Cleanup the downloaded segment file immediately after starting FFmpeg
+                    await asyncio.to_thread(os.remove, segment_path) # Use to_thread for blocking file operation
+                    print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Opened segment with FFmpeg, removed file: {current_segment_path}")
+
+                except asyncio.TimeoutError:
+                    if stop_event.is_set():
+                        break # Exit if stopping and queue is empty
+                    # print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Segment queue empty, waiting...")
                     continue
-                last_playlist_reload_time = time.time()
-                initial_segment_fetch_done = True
-
-            if not segments:
-                if not is_live_stream:
-                    logger.info(f"Call {call_id}: End of VOD playlist.")
-                    break
-                time.sleep(playlist_reload_interval)
-                continue
-
-            segment_to_process = None
-            if is_live_stream:
-                start_index_for_live = max(0, len(segments) - 5)
-                found_new_segment = False
-                for i in range(len(segments) -1, start_index_for_live -1, -1):
-                    if segments[i].uri not in processed_segment_uris:
-                        segment_to_process = segments[i]
-                        found_new_segment = True
-                        break
-                if not found_new_segment:
-                    time.sleep(playlist_reload_interval / 2.0)
+                except Exception as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Error getting segment or starting FFmpeg: {e}")
+                    if current_ffmpeg_process:
+                        current_ffmpeg_process.terminate()
+                        await asyncio.to_thread(current_ffmpeg_process.wait)
+                        current_ffmpeg_process = None
+                    await asyncio.sleep(0.1) # Avoid busy-loop on error
                     continue
-            else: # VOD stream
-                if current_segment_idx < len(segments):
-                    if segments[current_segment_idx].uri not in processed_segment_uris:
-                        segment_to_process = segments[current_segment_idx]
-                    else:
-                        current_segment_idx += 1
-                        continue
+
+            # Read audio data from FFmpeg process
+            try:
+                # Read from FFmpeg's stdout in a thread to avoid blocking the event loop
+                audio_data_chunk = await asyncio.to_thread(current_ffmpeg_process.stdout.read, RTP_BYTES_PER_PACKET)
+                
+                if audio_data_chunk:
+                    # pyVoIP's write_audio expects raw PCM/mu-law bytes
+                    call.write_audio(audio_data_chunk)
+                    # print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Sent {len(audio_data_chunk)} bytes of audio to call.")
+                    
+                    # Sleep for the exact duration of the audio sent
+                    await asyncio.sleep(RTP_PACKET_DURATION_MS / 1000.0)
                 else:
-                    logger.info(f"Call {call_id}: All VOD segments processed.")
-                    break
+                    # FFmpeg process finished for this segment (EOF)
+                    stdout_output, stderr_output = await asyncio.to_thread(current_ffmpeg_process.communicate) # Drain pipes
+                    if current_ffmpeg_process.returncode != 0:
+                        print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: FFmpeg exited with error code {current_ffmpeg_process.returncode} for {current_segment_path}.")
+                    current_ffmpeg_process = None
+                    current_segment_path = None
+                    print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: FFmpeg finished for segment. Looking for next.")
 
-            if not segment_to_process:
-                time.sleep(0.5)
-                continue
+            except InvalidStateError: # Call might have hung up unexpectedly
+                print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Call state invalid, likely hung up. Stopping audio stream.")
+                stop_event.set() # Signal to stop streaming
+                break # Exit the loop
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Error reading from FFmpeg or writing to call: {e}")
+                if current_ffmpeg_process:
+                    current_ffmpeg_process.terminate()
+                    await asyncio.to_thread(current_ffmpeg_process.wait)
+                current_ffmpeg_process = None
+                current_segment_path = None
+                await asyncio.sleep(0.1) # Prevent busy loop on error
+                stop_event.set() # Signal to stop streaming on critical error
+                break 
 
-            raw_audio_file = download_and_convert(
-                segment_to_process.uri, m3u3_url,
-                current_segment_idx if not is_live_stream else "live",
-                request_session
-            )
-
-            if raw_audio_file:
-                # Start RTP streaming in a new thread
-                rtp_thread = threading.Thread(
-                    target=stream_audio_to_rtp_sync,
-                    args=(call_id, raw_audio_file, rtp_remote_ip, rtp_remote_port)
-                )
-                rtp_thread.start()
-                processed_segment_uris.append(segment_to_process.uri)
-                if not is_live_stream:
-                    current_segment_idx += 1
-            else:
-                logger.warning(f"Call {call_id}: Skipping segment {segment_to_process.uri} due to processing error.")
-                processed_segment_uris.append(segment_to_process.uri)
-                if not is_live_stream:
-                    current_segment_idx += 1
-                time.sleep(0.5)
-
-            if call_id not in active_rtp_streams: # Check again if call ended externally
-                logger.info(f"Call {call_id}: Call ended externally. Stopping M3U8 stream.")
-                break
-    except Exception as e:
-        logger.error(f"Call {call_id}: Unhandled exception in streaming logic: {e}")
     finally:
-        logger.info(f"Call {call_id}: M3U8 streaming logic finished.")
-        if request_session:
-            request_session.close()
-            logger.info(f"Call {call_id}: Closed requests session.")
-        if call_id in active_rtp_streams:
-            del active_rtp_streams[call_id]
-            # OLD pysip: Send a BYE if stream finishes before remote hangs up
-            # This would require accessing the call object from the main SIP client
-            logger.info(f"Call {call_id}: Streaming complete, attempting to send BYE (manual action required).")
+        print(f"[{time.strftime('%H:%M:%S')}] RTP Streamer: Audio streaming to call finished.")
+        if current_ffmpeg_process: # Clean up any lingering FFmpeg process
+            current_ffmpeg_process.terminate()
+            await asyncio.to_thread(current_ffmpeg_process.wait)
+        stop_event.set() # Ensure stop signal is set upon exit
 
-
-# --- pysip Callbacks ---
-
-def on_register_ok(response):
-    logger.info(f"Registration successful! {response.status_code} {response.reason_phrase}")
-    # You might want to set a global flag here, but pysip handles refreshing itself.
-
-def on_register_failed(response):
-    logger.error(f"Registration failed: {response.status_code} {response.reason_phrase}")
-
-def on_incoming_invite(request):
-    logger.info(f"Received incoming INVITE from: {request.from_header.uri}. Call-ID: {request.call_id.value}")
-
-    # For older pysip, SDP parsing is often very manual or relies on an 'sdpsip' module
-    # or similar, which might or might not be robust.
-    sdp_body = None
+# --- pyVoIP Callbacks ---
+async def answer_call_callback(call):
+    """
+    This function is called by pyVoIP when an incoming call is received.
+    """
+    global stop_stream_event, current_stream_task # Declare global to modify the event and task reference
+    
+    print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Incoming call from {call.caller} to {call.callee}. Answering...")
+    
     try:
-        for content_type, content_data in request.body:
-            if content_type == 'application/sdp':
-                sdp_body = sdpsip.parse(content_data)
-                break
+        call.answer()
+        print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Call answered.")
+        
+        stop_stream_event.clear() # Clear the stop event for new stream
+        
+        # Start the M3U8 streaming task for this call
+        # This task will run concurrently with the SIP call
+        current_stream_task = asyncio.create_task(stream_audio_to_call_task(call, segment_queue, stop_stream_event))
+        
+        # Keep the call alive as long as the streaming task is running and the call is answered
+        while call.state == CallState.ANSWERED and not stop_stream_event.is_set():
+            # You could check for DTMF here if you wanted an IVR-like system
+            # dtmf = await asyncio.to_thread(call.read_dtmf) # read_dtmf might be blocking
+            # if dtmf:
+            #     print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Received DTMF: {dtmf}")
+            
+            await asyncio.sleep(0.5) # Periodically check call state and stop event
+        
+        print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Call from {call.caller} ended or stream stopped. Hanging up.")
+        call.hangup()
+        print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Call hung up.")
+
+    except InvalidStateError:
+        print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Call from {call.caller} invalid state, hanging up.")
+        call.hangup()
     except Exception as e:
-        logger.error(f"Failed to parse SDP from INVITE: {e}")
-        # Send a 400 Bad Request or 415 Unsupported Media Type
-        response = request.create_response(400, "Bad Request - SDP Missing/Invalid")
-        sip_client_instance.send_response(response)
-        return
+        print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Error during call handling: {e}")
+        try:
+            call.hangup()
+        except InvalidStateError:
+            pass # Already hung up
 
-    if not sdp_body:
-        logger.error("No SDP body found in INVITE. Declining.")
-        response = request.create_response(488, "Not Acceptable Here - No SDP")
-        sip_client_instance.send_response(response)
-        return
+    finally:
+        stop_stream_event.set() # Ensure streaming task is signaled to stop
+        # Cancel the task explicitly if it's still running
+        if current_stream_task and not current_stream_task.done():
+            current_stream_task.cancel()
+            try:
+                await current_stream_task
+            except asyncio.CancelledError:
+                print(f"[{time.strftime('%H:%M:%S')}] SIP Call: Streaming task cancelled during call cleanup.")
 
-    rtp_remote_ip = None
-    rtp_remote_port = None
+# --- Main Application Logic ---
+async def main():
+    print(f"[{time.strftime('%H:%M:%S')}] Main: Starting async SIP M3U8 Streamer...")
 
-    # This SDP parsing is rudimentary for the old pysip and assumes simple cases
-    # You'd look for 'c=' line for IP and 'm=' line for port
-    for line in sdp_body.splitlines(): # Assuming sdp_body is raw string here
-        if line.startswith('c=IN IP4'):
-            rtp_remote_ip = line.split()[2]
-        elif line.startswith('m=audio'):
-            rtp_remote_port = int(line.split()[1])
-            # You'd also need to check codecs offered (e.g., a=rtpmap:0 PCMU/8000)
-            break
+    # Aiohttp session should be created once for the application lifecycle
+    async with aiohttp.ClientSession() as http_session:
+        # Create and start the M3U8 downloader as an asyncio task
+        downloader = M3U8Downloader(M3U8_LIVE_URL, SEGMENT_CACHE_DIR, segment_queue, stop_download_event, http_session)
+        downloader_task = asyncio.create_task(downloader.run())
 
-    if not rtp_remote_ip or not rtp_remote_port:
-        logger.error(f"Could not determine remote RTP address/port from SDP. Declining.")
-        response = request.create_response(488, "Not Acceptable Here - Missing RTP Info")
-        sip_client_instance.send_response(response)
-        return
-
-    logger.info(f"Answering INVITE. Remote RTP: {rtp_remote_ip}:{rtp_remote_port}")
-
-    # Generate our own local SDP offer
-    # You would need to determine the actual local RTP port your socket binds to
-    # For now, let's assume a placeholder local RTP port of 12000.
-    # In a real app, you'd bind an RTP socket and get its ephemeral port.
-    LOCAL_RTP_PORT_PLACEHOLDER = 12000
-    local_sdp_offer = (
-        "v=0\r\n"
-        f"o=- 1 1 IN IP4 {YOUR_LOCAL_IP}\r\n"
-        "s=-\r\n"
-        f"c=IN IP4 {YOUR_LOCAL_IP}\r\n"
-        "t=0 0\r\n"
-        f"m=audio {LOCAL_RTP_PORT_PLACEHOLDER} RTP/AVP 0\r\n" # Payload 0 for PCMU/G.711 U-law
-        "a=rtpmap:0 PCMU/8000\r\n"
-        "a=sendrecv\r\n"
-    )
-
-    # Send 200 OK
-    response = request.create_response(200, "OK")
-    response.add_header('Contact', f'<sip:{SIP_USERNAME}@{YOUR_LOCAL_IP}:{SIP_SERVER_PORT}>')
-    response.set_body(local_sdp_offer, 'application/sdp')
-    sip_client_instance.send_response(response)
-
-    # Start a separate thread for M3U8 streaming and RTP
-    call_id = request.call_id.value
-    active_rtp_streams[call_id] = True # Mark call as active
-    streaming_thread = threading.Thread(
-        target=m3u8_streaming_logic_sync,
-        args=(call_id, rtp_remote_ip, rtp_remote_port, DEFAULT_M3U8_URL)
-    )
-    streaming_thread.start()
-
-def on_bye_received(request):
-    logger.info(f"Received BYE for Call-ID: {request.call_id.value}. Sending 200 OK.")
-    response = request.create_response(200, "OK")
-    sip_client_instance.send_response(response)
-
-    call_id = request.call_id.value
-    if call_id in active_rtp_streams:
-        del active_rtp_streams[call_id] # Signal RTP thread to stop
-        logger.info(f"Stopped M3U8 streaming for Call-ID: {call_id}.")
-
-def on_options_received(request):
-    # This is where the crucial fix would go for pysip
-    logger.info(f"Received OPTIONS request from {request.source_ip}:{request.source_port}")
-    response = request.create_response(200, "OK")
-    response.add_header('Allow', 'INVITE, ACK, BYE, CANCEL, OPTIONS, INFO, MESSAGE, REGISTER, SUBSCRIBE, NOTIFY')
-    response.add_header('Supported', 'replaces, timer') # Common supports
-    response.add_header('Accept', 'application/sdp') # Common accept
-    response.set_body('', '') # No body for OPTIONS 200 OK
-    sip_client_instance.send_response(response)
-    logger.info(f"Sent 200 OK for OPTIONS to {request.source_ip}:{request.source_port}")
-
-# --- Main Application Execution (Synchronous) ---
-def main():
-    logger.info("Starting M3U8 pysip Player (Conceptual)...")
-    logger.info(f"SIP Server: {SIP_SERVER_IP}:{SIP_SERVER_PORT}")
-    logger.info(f"SIP Username: {SIP_USERNAME}")
-    logger.info(f"Local IP for pysip: {YOUR_LOCAL_IP}")
-    logger.info(f"Default M3U8 URL: {DEFAULT_M3U8_URL}")
-
-    m3u8_override = os.getenv("M3U8_STREAM_URL")
-    actual_m3u8_url = m3u8_override if m3u3_override else DEFAULT_M3U8_URL
-    global DEFAULT_M3U8_URL # Update global for consistency in streaming logic
-    DEFAULT_M3U3_URL = actual_m3u3_url
-
-    try:
-        ffmpeg_test_process = subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True, timeout=5)
-        logger.info(f"FFmpeg found: {ffmpeg_test_process.stdout.decode().splitlines()[0]}")
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
-        logger.critical(f"FFmpeg not found or not working. Error: {e}")
-        exit(1)
-
-    global sip_client_instance
-    try:
-        # Initialize pysip client
-        # pysip.sip.SIPClient(local_ip, local_port)
-        # local_port can often be 5060, or let it bind to 0 for ephemeral.
-        # For simplicity, let's bind to 5060 directly.
-        sip_client_instance = sip.SIPClient(YOUR_LOCAL_IP, SIP_SERVER_PORT)
-
-        # Register callbacks
-        sip_client_instance.add_invite_handler(on_incoming_invite)
-        sip_client_instance.add_bye_handler(on_bye_received)
-        # This is crucial for OPTIONS. Older libraries might not have a dedicated handler.
-        # You might need to override a more general message handler if `add_options_handler` doesn't exist.
-        # Assuming `add_options_handler` or similar exists for incoming requests.
-        # If not, you'd need to extend/monkey-patch internal dispatch.
-        sip_client_instance.add_options_handler(on_options_received)
-
-        # Register with the SIP server
-        # pysip.sip.UserAgent.register(sip_client, from_uri, to_uri, username, password, expiry)
-        from_uri = SipURI(f"{SIP_USERNAME}", f"{SIP_SERVER_IP}:{SIP_SERVER_PORT}")
-        to_uri = SipURI(f"{SIP_USERNAME}", f"{SIP_SERVER_IP}:{SIP_SERVER_PORT}") # Often same as from
-        register_expires = 3600 # seconds
-
-        # This will send REGISTER and handle refreshes
-        sip_client_instance.register(
-            from_uri,
-            to_uri,
+        # Initialize pyVoIP phone
+        # The `callCallback` is an async function, pyVoIP will manage its execution
+        phone = VoIPPhone(
+            SIP_SERVER_IP,
+            SIP_SERVER_PORT,
             SIP_USERNAME,
             SIP_PASSWORD,
-            register_expires,
-            ok_handler=on_register_ok,
-            fail_handler=on_register_failed
+            myIP=YOUR_LOCAL_IP,
+            callCallback=answer_call_callback, # Our async callback for incoming calls
         )
-        logger.info(f"Attempting to register {SIP_USERNAME} with {SIP_SERVER_IP}:{SIP_SERVER_PORT}")
+        
+        print(f"[{time.strftime('%H:%M:%S')}] Main: SIP Phone initialized with user {SIP_USERNAME}@{SIP_SERVER_IP}:{SIP_SERVER_PORT}")
+        print(f"[{time.strftime('%H:%M:%S')}] Main: Listening on IP: {YOUR_LOCAL_IP}")
 
+        # Start the VoIP phone (this usually registers with the SIP server and starts listening)
+        phone.start()
+        print(f"[{time.strftime('%H:%M:%S')}] Main: SIP Phone started. Waiting for incoming calls...")
 
-        # Start the SIP client's main loop (this is blocking!)
-        logger.info("pysip client started. Running main loop (blocking).")
-        sip_client_instance.run_loop() # This is the main blocking loop
-
-    except Exception as e:
-        logger.exception(f"Unhandled error in main application: {e}")
-    finally:
-        logger.info("pysip application exiting. Cleaning up.")
-        if sip_client_instance:
-            sip_client_instance.shutdown()
-        # Cleanup temp files (same as before)
-        for f_name in os.listdir("."):
-            if f_name.startswith("temp_input_") or f_name.startswith("temp_output_"):
+        try:
+            # Keep the main loop running until interrupted
+            while True:
+                await asyncio.sleep(1) # Keep main thread alive and allow tasks to run
+        except KeyboardInterrupt:
+            print(f"[{time.strftime('%H:%M:%S')}] Main: Ctrl+C detected. Initiating graceful shutdown...")
+        finally:
+            # --- Graceful Shutdown Sequence ---
+            
+            # 1. Signal downloader task to stop and await its completion
+            stop_download_event.set()
+            if downloader_task and not downloader_task.done():
+                print(f"[{time.strftime('%H:%M:%S')}] Main: Waiting for M3U8 downloader task to finish...")
+                downloader_task.cancel()
                 try:
-                    os.remove(f_name)
-                except OSError as e_os_err:
-                    logger.error(f"Error cleaning up stray temp file {f_name}: {e_os_err}")
-        logger.info("Cleanup complete. Application exiting.")
+                    await asyncio.wait_for(downloader_task, timeout=5)
+                except asyncio.CancelledError:
+                    print(f"[{time.strftime('%H:%M:%S')}] Main: M3U8 downloader task cancelled during shutdown.")
+                except asyncio.TimeoutError:
+                    print(f"[{time.strftime('%H:%M:%S')}] Main: M3U8 downloader task did not stop gracefully within timeout.")
+
+            # 2. Signal current RTP streaming task to stop (if any is active)
+            stop_stream_event.set() 
+            if current_stream_task and not current_stream_task.done():
+                print(f"[{time.strftime('%H:%M:%S')}] Main: Waiting for audio streaming task to finish...")
+                current_stream_task.cancel() # Request cancellation
+                try:
+                    await asyncio.wait_for(current_stream_task, timeout=5) # Wait for it to complete/cancel
+                except asyncio.CancelledError:
+                    print(f"[{time.strftime('%H:%M:%S')}] Main: Audio streaming task cancelled during shutdown.")
+                except asyncio.TimeoutError:
+                    print(f"[{time.strftime('%H:%M:%S')}] Main: Audio streaming task did not stop gracefully within timeout.")
+            
+            # 3. Stop the VoIP phone gracefully
+            phone.stop()
+            print(f"[{time.strftime('%H:%M:%S')}] Main: SIP Phone stopped.")
+
+            # 4. Clean up cached segments
+            if os.path.exists(SEGMENT_CACHE_DIR):
+                for filename in os.listdir(SEGMENT_CACHE_DIR):
+                    file_path = os.path.join(SEGMENT_CACHE_DIR, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            await asyncio.to_thread(os.unlink, file_path) # Use to_thread for blocking file operation
+                    except Exception as e:
+                        print(f"[{time.strftime('%H:%M:%S')}] Main: Error deleting file {file_path}: {e}")
+                try:
+                    await asyncio.to_thread(os.rmdir, SEGMENT_CACHE_DIR) # Use to_thread for blocking dir operation
+                    print(f"[{time.strftime('%H:%M:%S')}] Main: Cleaned up segment cache directory.")
+                except OSError as e:
+                    print(f"[{time.strftime('%H:%M:%S')}] Main: Could not remove directory {SEGMENT_CACHE_DIR}: {e}")
+            
+        print(f"[{time.strftime('%H:%M:%S')}] Main: Application shut down gracefully.")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
