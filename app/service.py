@@ -12,7 +12,7 @@ from pyVoIP.VoIP import VoIPPhone, InvalidStateError, CallState
 SIP_SERVER_IP = config.hoip_url
 SIP_SERVER_PORT = config.hoip_port
 SIP_USERNAME = config.hoip_username
-SIP_PASSWORD = config.hoip_password``
+SIP_PASSWORD = config.hoip_password
 YOUR_LOCAL_IP = config.my_ip
 M3U8_LIVE_URL = config.radio_australia_url
 SEGMENT_CACHE_DIR = config.SEGMENT_CACHE_DIR
