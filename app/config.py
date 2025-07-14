@@ -1,11 +1,9 @@
-hoip_url = ""
-hoip_port = 5060
-hoip_username = ""
+hoipuri = ""
 hoip_password = ""
-my_ip = ''
+sip_server_registrar = ""
 
 # RADIO URL
-radio_australia_url = "https://mediaserviceslive.akamaized.net/hls/live/2038267/raeng/index.m3u8"
+upstreamaudio = "https://mediaserviceslive.akamaized.net/hls/live/2038267/raeng/index.m3u8"
 
 #AUDIO PARAMS
 target_audio_format = "pcm_mulaw"
