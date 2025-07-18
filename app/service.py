@@ -23,6 +23,7 @@ ua_cfg = pj.UAConfig()
 log_cfg = pj.LogConfig()
 transport_cfg = pj.TransportConfig()
 current_call = None
+audio_playback_queue = queue.Queue()
 
 class Account(pj.Account):
     def __init__(self):
@@ -338,7 +339,7 @@ def init_pjsip():
         print("PJSIP initialized and started.")
 
         # Create account for listening
-        account = MyAccount()
+        account = Account()
         acc_cfg = pj.AccountConfig()
         acc_cfg.idUri = SIP_LISTEN_URI
         acc_cfg.regConfig.registrarUri = SIP_SERVER_REGISTRAR
