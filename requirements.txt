@@ -1,3 +1,2 @@
-pyVoIP
-m3u8
+pjsua2
 requests
