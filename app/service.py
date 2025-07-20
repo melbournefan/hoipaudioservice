@@ -326,7 +326,7 @@ def play_m3u8_stream(audiofile, audio_q, stop_event):
 def init_pjsip():
     global lib, account
 
-    ep_cfg.logConfig.level = 4 # Adjust log level as needed
+    ep_cfg.logConfig.level = 6 # Adjust log level as needed
     ep_cfg.uaConfig.maxCalls = 1 # CHANGED: Access uaConfig via ep_cfg.uaConfig
     ep_cfg.uaConfig.threadCnt = 0 # CHANGED: Access uaConfig via ep_cfg.uaConfig
     try:
