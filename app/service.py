@@ -19,7 +19,6 @@ audiofile = config.upstreamaudio
 
 lib = pj.Endpoint()
 ep_cfg = pj.EpConfig()
-ua_cfg = pj.UAConfig()
 log_cfg = pj.LogConfig()
 transport_cfg = pj.TransportConfig()
 current_call = None
@@ -328,9 +327,8 @@ def init_pjsip():
     global lib, account
 
     ep_cfg.logConfig.level = 4 # Adjust log level as needed
-    ep_cfg.uaConfig.maxCalls = 1
-    ep_cfg.uaConfig.threadCnt = 0 # PJSIP uses its own threads
-
+    ep_cfg.uaConfig.maxCalls = 1 # CHANGED: Access uaConfig via ep_cfg.uaConfig
+    ep_cfg.uaConfig.threadCnt = 0 # CHANGED: Access uaConfig via ep_cfg.uaConfig
     try:
         lib.libInit(ep_cfg)
         # Use UDP for transport (common for SIP)
