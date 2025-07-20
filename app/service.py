@@ -17,7 +17,7 @@ SIP_SERVER_REGISTRAR = config.sip_server_registrar
 #audio file
 audiofile = config.upstreamaudio
 
-lib = pj.Lib()
+lib = pj.Endpoint()
 ep_cfg = pj.EpConfig()
 ua_cfg = pj.UAConfig()
 log_cfg = pj.LogConfig()
@@ -332,10 +332,10 @@ def init_pjsip():
     ep_cfg.uaConfig.threadCnt = 0 # PJSIP uses its own threads
 
     try:
-        lib.init(ep_cfg)
+        lib.libInit(ep_cfg)
         # Use UDP for transport (common for SIP)
-        lib.createTransport(pj.PJSIP_TRANSPORT_UDP, transport_cfg)
-        lib.start()
+        lib.transportCreate(pj.PJSIP_TRANSPORT_UDP, transport_cfg)
+        lib.libStart()
         print("PJSIP initialized and started.")
 
         # Create account for listening
@@ -357,7 +357,7 @@ def init_pjsip():
         print(f"PJSIP Error: {e}")
     finally:
         print("Destroying PJSIP...")
-        lib.destroy()
+        lib.libDestroy()
 
 if __name__ == "__main__":
     # Check if ffmpeg is available
