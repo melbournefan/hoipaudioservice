@@ -109,12 +109,12 @@ class MyCall(pj.Call):
             log.info("Piping audio to call from web stream")
             call_audio_media = self.getAudioMedia()
             self.custom_audio_port = M3U8AudioMediaPort()
-            lib.instance().confConnect(self.custom_audio_port.getPortId(), call_audio_media.getPortId())
+            #lib.instance().confConnect(self.custom_audio_port.getPortId(), call_audio_media.getPortId())
             self.connected_to_call_media = True
             global playback_thread, stop_playback_event
             stop_playback_event.clear()
-            playback_thread = threading.Thread(target=play_m3u8_stream,
-                                                   args=(audiofile, audio_playback_queue, stop_playback_event))
+            #playback_thread = threading.Thread(target=play_m3u8_stream,
+                                                   #args=(audiofile, audio_playback_queue, stop_playback_event))
             playback_thread.daemon = True # Allow program to exit if main thread finishes
             playback_thread.start()
         class M3U8AudioMediaPort(pj.AudioMedia):
